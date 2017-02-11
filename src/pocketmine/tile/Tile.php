@@ -119,11 +119,12 @@ abstract class Tile extends Position{
 	public function __construct(Level $level, CompoundTag $nbt){
 		$this->timings = Timings::getTileEntityTimings($this);
 
-		$this->server = $level->getServer();
-		$this->chunk = $level->getChunk($this->namedtag["x"] >> 4, $this->namedtag["z"] >> 4);
-		assert($this->chunk !== null);
-		$this->setLevel($level);
 		$this->namedtag = $nbt;
+		$this->server = $level->getServer();
+		$this->setLevel($level);
+		$this->chunk = $level->getChunk($this->namedtag["x"] >> 4, $this->namedtag["z"] >> 4, false);
+		assert($this->chunk !== null);
+
 		$this->name = "";
 		$this->lastUpdate = microtime(true);
 		$this->id = Tile::$tileCount++;
