@@ -392,7 +392,6 @@ class LevelDB extends BaseLevelProvider{
 			}*/ //TODO
 
 			$chunk = new Chunk(
-				$this,
 				$chunkX,
 				$chunkZ,
 				$subChunks,
@@ -469,7 +468,7 @@ class LevelDB extends BaseLevelProvider{
 
 	public function unloadChunk(int $x, int $z, bool $safe = true) : bool{
 		$chunk = $this->chunks[$index = Level::chunkHash($x, $z)] ?? null;
-		if($chunk instanceof Chunk and $chunk->unload(false, $safe)){
+		if($chunk instanceof Chunk and $chunk->unload($safe)){
 			unset($this->chunks[$index]);
 
 			return true;
@@ -514,8 +513,6 @@ class LevelDB extends BaseLevelProvider{
 	}
 
 	public function setChunk(int $chunkX, int $chunkZ, Chunk $chunk){
-		$chunk->setProvider($this);
-
 		$chunk->setX($chunkX);
 		$chunk->setZ($chunkZ);
 
