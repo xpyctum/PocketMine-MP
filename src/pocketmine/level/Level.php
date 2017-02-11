@@ -649,6 +649,18 @@ class Level implements ChunkManager, Metadatable{
 
 		$this->checkTime();
 
+
+		while(($data = $this->provider->getChunkFromBuffer()) !== null){
+			try{
+				$chunk = Chunk::fastDeserialize($data);
+				$this->setChunk($chunk->getX(), $chunk->getZ());
+			}catch(\Throwable $e){
+				$logger = $this->server->getLogger();
+				$logger->error("An error occurred while decoding a chunk");
+				$logger->logException($e);
+			}
+		}
+
 		$this->unloadChunks();
 
 		//Do block updates
@@ -2512,8 +2524,7 @@ class Level implements ChunkManager, Metadatable{
 					}
 
 					if($chunk->hasChanged() or count($chunk->getTiles()) > 0 or $entities > 0){
-						$this->provider->setChunk($x, $z, $chunk);
-						$this->provider->saveChunk($x, $z);
+						$this->provider->requestSaveChunk($chunk);
 					}
 				}
 
@@ -2521,7 +2532,6 @@ class Level implements ChunkManager, Metadatable{
 					$loader->onChunkUnloaded($chunk);
 				}
 			}
-			$this->provider->unloadChunk($x, $z, $safe);
 		}catch(\Throwable $e){
 			$logger = $this->server->getLogger();
 			$logger->error($this->server->getLanguage()->translateString("pocketmine.level.chunkUnloadError", [$e->getMessage()]));

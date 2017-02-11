@@ -26,6 +26,7 @@ namespace pocketmine\level\format\io\region;
 use pocketmine\level\format\Chunk;
 use pocketmine\level\format\io\BaseLevelProvider;
 use pocketmine\level\format\io\ChunkException;
+use pocketmine\level\format\io\ChunkIoThread;
 use pocketmine\level\format\io\ChunkUtils;
 use pocketmine\level\format\SubChunk;
 use pocketmine\level\generator\Generator;
@@ -35,24 +36,18 @@ use pocketmine\nbt\tag\{
 	ByteArrayTag, ByteTag, CompoundTag, IntArrayTag, IntTag, ListTag, LongTag, StringTag
 };
 use pocketmine\Player;
-use pocketmine\utils\MainLogger;
 
-class McRegion extends BaseLevelProvider{
+class McRegion extends ChunkIoThread{
 
 	const REGION_FILE_EXTENSION = "mcr";
 
 	/** @var RegionLoader[] */
 	protected $regions = [];
 
-	/** @var Chunk[] */
-	protected $chunks = [];
-
 	/**
-	 * @param Chunk $chunk
-	 *
-	 * @return string
+	 * {@inheritdoc}
 	 */
-	public function nbtSerialize(Chunk $chunk) : string{
+	protected function writeChunk(Chunk $chunk){
 		$nbt = new CompoundTag("Level", []);
 		$nbt->xPos = new IntTag("xPos", $chunk->getX());
 		$nbt->zPos = new IntTag("zPos", $chunk->getZ());
@@ -115,95 +110,99 @@ class McRegion extends BaseLevelProvider{
 		$nbt->setName("Level");
 		$writer->setData(new CompoundTag("", ["Level" => $nbt]));
 
-		return $writer->writeCompressed(ZLIB_ENCODING_DEFLATE, RegionLoader::$COMPRESSION_LEVEL);
+		$data = $writer->writeCompressed(ZLIB_ENCODING_DEFLATE, RegionLoader::$COMPRESSION_LEVEL);
+		$this->getRegion($chunk->getX() >> 5, $chunk->getZ() >> 5, true)->writeChunk($chunk->getX() & 0x1f, $chunk->getZ() & 0x1f, $data);
 	}
 
 	/**
-	 * @param string $data
-	 *
-	 * @return Chunk|null
+	 * {@inheritdoc}
 	 */
-	public function nbtDeserialize(string $data){
-		$nbt = new NBT(NBT::BIG_ENDIAN);
-		try{
-			$nbt->readCompressed($data, ZLIB_ENCODING_DEFLATE);
+	protected function readChunk(string $index){
+		static::decodeChunkIndex($index, $x, $z, $dimension);
 
-			$chunk = $nbt->getData();
+		$region = $this->getRegion($x >> 5, $z >> 5, true);
 
-			if(!isset($chunk->Level) or !($chunk->Level instanceof CompoundTag)){
-				throw new ChunkException("Invalid NBT format");
-			}
-
-			$chunk = $chunk->Level;
-
-			$subChunks = [];
-			$fullIds = isset($chunk->Blocks) ? $chunk->Blocks->getValue() : str_repeat("\x00", 32768);
-			$fullData = isset($chunk->Data) ? $chunk->Data->getValue() : (str_repeat("\x00", 16384));
-			$fullSkyLight = isset($chunk->SkyLight) ? $chunk->SkyLight->getValue() : str_repeat("\xff", 16384);
-			$fullBlockLight = isset($chunk->BlockLight) ? $chunk->BlockLight->getValue() : (str_repeat("\x00", 16384));
-
-			for($y = 0; $y < 8; ++$y){
-				$offset = ($y << 4);
-				$ids = "";
-				for($i = 0; $i < 256; ++$i){
-					$ids .= substr($fullIds, $offset, 16);
-					$offset += 128;
-				}
-				$data = "";
-				$offset = ($y << 3);
-				for($i = 0; $i < 256; ++$i){
-					$data .= substr($fullData, $offset, 8);
-					$offset += 64;
-				}
-				$skyLight = "";
-				$offset = ($y << 3);
-				for($i = 0; $i < 256; ++$i){
-					$skyLight .= substr($fullSkyLight, $offset, 8);
-					$offset += 64;
-				}
-				$blockLight = "";
-				$offset = ($y << 3);
-				for($i = 0; $i < 256; ++$i){
-					$blockLight .= substr($fullBlockLight, $offset, 8);
-					$offset += 64;
-				}
-				$subChunks[$y] = new SubChunk($ids, $data, $skyLight, $blockLight);
-			}
-
-			if(isset($chunk->BiomeColors)){
-				$biomeIds = ChunkUtils::convertBiomeColors($chunk->BiomeColors->getValue()); //Convert back to original format
-			}elseif(isset($chunk->Biomes)){
-				$biomeIds = $chunk->Biomes->getValue();
-			}else{
-				$biomeIds = "";
-			}
-
-			$heightMap = [];
-			if(isset($chunk->HeightMap)){
-				if($chunk->HeightMap instanceof ByteArrayTag){
-					$heightMap = unpack("C*", $chunk->HeightMap->getValue());
-				}elseif($chunk->HeightMap instanceof IntArrayTag){
-					$heightMap = $chunk->HeightMap->getValue(); #blameshoghicp
-				}
-			}
-
-			$result = new Chunk(
-				$chunk["xPos"],
-				$chunk["zPos"],
-				$subChunks,
-				isset($chunk->Entities) ? $chunk->Entities->getValue() : [],
-				isset($chunk->TileEntities) ? $chunk->TileEntities->getValue() : [],
-				$biomeIds,
-				$heightMap
-			);
-			$result->setLightPopulated(isset($chunk->LightPopulated) ? ((bool) $chunk->LightPopulated->getValue()) : false);
-			$result->setPopulated(isset($chunk->TerrainPopulated) ? ((bool) $chunk->TerrainPopulated->getValue()) : false);
-			$result->setGenerated(true);
-			return $result;
-		}catch(\Throwable $e){
-			MainLogger::getLogger()->logException($e);
+		if(($data = $region->readChunk($x & 0x1f, $z & 0x1f)) === ""){
 			return null;
 		}
+
+
+		$nbt = new NBT(NBT::BIG_ENDIAN);
+
+		$nbt->readCompressed($data, ZLIB_ENCODING_DEFLATE);
+
+		$chunk = $nbt->getData();
+
+		if(!isset($chunk->Level) or !($chunk->Level instanceof CompoundTag)){
+			throw new ChunkException("Invalid NBT format");
+		}
+
+		$chunk = $chunk->Level;
+
+		$subChunks = [];
+		$fullIds = isset($chunk->Blocks) ? $chunk->Blocks->getValue() : str_repeat("\x00", 32768);
+		$fullData = isset($chunk->Data) ? $chunk->Data->getValue() : (str_repeat("\x00", 16384));
+		$fullSkyLight = isset($chunk->SkyLight) ? $chunk->SkyLight->getValue() : str_repeat("\xff", 16384);
+		$fullBlockLight = isset($chunk->BlockLight) ? $chunk->BlockLight->getValue() : (str_repeat("\x00", 16384));
+
+		for($y = 0; $y < 8; ++$y){
+			$offset = ($y << 4);
+			$ids = "";
+			for($i = 0; $i < 256; ++$i){
+				$ids .= substr($fullIds, $offset, 16);
+				$offset += 128;
+			}
+			$data = "";
+			$offset = ($y << 3);
+			for($i = 0; $i < 256; ++$i){
+				$data .= substr($fullData, $offset, 8);
+				$offset += 64;
+			}
+			$skyLight = "";
+			$offset = ($y << 3);
+			for($i = 0; $i < 256; ++$i){
+				$skyLight .= substr($fullSkyLight, $offset, 8);
+				$offset += 64;
+			}
+			$blockLight = "";
+			$offset = ($y << 3);
+			for($i = 0; $i < 256; ++$i){
+				$blockLight .= substr($fullBlockLight, $offset, 8);
+				$offset += 64;
+			}
+			$subChunks[$y] = new SubChunk($ids, $data, $skyLight, $blockLight);
+		}
+
+		if(isset($chunk->BiomeColors)){
+			$biomeIds = ChunkUtils::convertBiomeColors($chunk->BiomeColors->getValue()); //Convert back to original format
+		}elseif(isset($chunk->Biomes)){
+			$biomeIds = $chunk->Biomes->getValue();
+		}else{
+			$biomeIds = "";
+		}
+
+		$heightMap = [];
+		if(isset($chunk->HeightMap)){
+			if($chunk->HeightMap instanceof ByteArrayTag){
+				$heightMap = unpack("C*", $chunk->HeightMap->getValue());
+			}elseif($chunk->HeightMap instanceof IntArrayTag){
+				$heightMap = $chunk->HeightMap->getValue(); #blameshoghicp
+			}
+		}
+
+		$result = new Chunk(
+			$chunk["xPos"],
+			$chunk["zPos"],
+			$subChunks,
+			isset($chunk->Entities) ? $chunk->Entities->getValue() : [],
+			isset($chunk->TileEntities) ? $chunk->TileEntities->getValue() : [],
+			$biomeIds,
+			$heightMap
+		);
+		$result->setLightPopulated(isset($chunk->LightPopulated) ? ((bool) $chunk->LightPopulated->getValue()) : false);
+		$result->setPopulated(isset($chunk->TerrainPopulated) ? ((bool) $chunk->TerrainPopulated->getValue()) : false);
+		$result->setGenerated(true);
+		return $result;
 	}
 
 	public static function getProviderName() : string{
@@ -281,116 +280,7 @@ class McRegion extends BaseLevelProvider{
 		return ["preset" => $this->levelData["generatorOptions"]];
 	}
 
-	public function getChunk(int $chunkX, int $chunkZ, bool $create = false){
-		$index = Level::chunkHash($chunkX, $chunkZ);
-		if(isset($this->chunks[$index])){
-			return $this->chunks[$index];
-		}else{
-			$this->loadChunk($chunkX, $chunkZ, $create);
-
-			return $this->chunks[$index] ?? null;
-		}
-	}
-
-	public function setChunk(int $chunkX, int $chunkZ, Chunk $chunk){
-		self::getRegionIndex($chunkX, $chunkZ, $regionX, $regionZ);
-		$this->loadRegion($regionX, $regionZ);
-
-		$chunk->setX($chunkX);
-		$chunk->setZ($chunkZ);
-
-
-		if(isset($this->chunks[$index = Level::chunkHash($chunkX, $chunkZ)]) and $this->chunks[$index] !== $chunk){
-			$this->unloadChunk($chunkX, $chunkZ, false);
-		}
-
-		$this->chunks[$index] = $chunk;
-	}
-
-	public function saveChunk(int $chunkX, int $chunkZ) : bool{
-		if($this->isChunkLoaded($chunkX, $chunkZ)){
-			$this->getRegion($chunkX >> 5, $chunkZ >> 5)->writeChunk($this->getChunk($chunkX, $chunkZ));
-
-			return true;
-		}
-
-		return false;
-	}
-
-	public function saveChunks(){
-		foreach($this->chunks as $chunk){
-			$this->saveChunk($chunk->getX(), $chunk->getZ());
-		}
-	}
-
-	public function loadChunk(int $chunkX, int $chunkZ, bool $create = false) : bool{
-		$index = Level::chunkHash($chunkX, $chunkZ);
-		if(isset($this->chunks[$index])){
-			return true;
-		}
-		$regionX = $regionZ = null;
-		self::getRegionIndex($chunkX, $chunkZ, $regionX, $regionZ);
-		/** @noinspection PhpStrictTypeCheckingInspection */
-		$this->loadRegion($regionX, $regionZ);
-		$this->level->timings->syncChunkLoadDataTimer->startTiming();
-		/** @noinspection PhpStrictTypeCheckingInspection */
-		$chunk = $this->getRegion($regionX, $regionZ)->readChunk($chunkX - $regionX * 32, $chunkZ - $regionZ * 32);
-		if($chunk === null and $create){
-			$chunk = $this->getEmptyChunk($chunkX, $chunkZ);
-		}
-		$this->level->timings->syncChunkLoadDataTimer->stopTiming();
-
-		if($chunk !== null){
-			$this->chunks[$index] = $chunk;
-			return true;
-		}else{
-			return false;
-		}
-	}
-
-	public function unloadChunk(int $chunkX, int $chunkZ, bool $safe = true) : bool{
-		$chunk = $this->chunks[$index = Level::chunkHash($chunkX, $chunkZ)] ?? null;
-		if($chunk instanceof Chunk and $chunk->unload($safe)){
-			unset($this->chunks[$index]);
-			return true;
-		}
-
-		return false;
-	}
-
-	public function unloadChunks(){
-		foreach($this->chunks as $chunk){
-			$this->unloadChunk($chunk->getX(), $chunk->getZ(), false);
-		}
-		$this->chunks = [];
-	}
-
-	public function isChunkLoaded(int $chunkX, int $chunkZ) : bool{
-		return isset($this->chunks[Level::chunkHash($chunkX, $chunkZ)]);
-	}
-
-	public function isChunkGenerated(int $chunkX, int $chunkZ) : bool{
-		if(($region = $this->getRegion($chunkX >> 5, $chunkZ >> 5)) !== null){
-			return $region->chunkExists($chunkX - $region->getX() * 32, $chunkZ - $region->getZ() * 32) and $this->getChunk($chunkX - $region->getX() * 32, $chunkZ - $region->getZ() * 32, true)->isGenerated();
-		}
-
-		return false;
-	}
-
-	public function isChunkPopulated(int $chunkX, int $chunkZ) : bool{
-		$chunk = $this->getChunk($chunkX, $chunkZ);
-		if($chunk !== null){
-			return $chunk->isPopulated();
-		}else{
-			return false;
-		}
-	}
-
-	public function getLoadedChunks() : array{
-		return $this->chunks;
-	}
-
-	public function doGarbageCollection(){
+	protected function doGarbageCollection(){
 		$limit = time() - 300;
 		foreach($this->regions as $index => $region){
 			if($region->lastUsed <= $limit){
@@ -422,31 +312,28 @@ class McRegion extends BaseLevelProvider{
 	}
 
 	/**
-	 * @param int $x
-	 * @param int $z
+	 * @param int  $x
+	 * @param int  $z
+	 * @param bool $load
 	 *
 	 * @return RegionLoader
 	 */
-	protected function getRegion(int $x, int $z){
-		return $this->regions[Level::chunkHash($x, $z)] ?? null;
-	}
+	protected function getRegion(int $x, int $z, bool $load = true){
+		$index = Level::chunkHash($x, $z); //yes, this is intended
 
-	/**
-	 * @param int $x
-	 * @param int $z
-	 */
-	protected function loadRegion(int $x, int $z){
-		if(!isset($this->regions[$index = Level::chunkHash($x, $z)])){
-			$this->regions[$index] = new RegionLoader($this, $x, $z, static::REGION_FILE_EXTENSION);
+		if(isset($this->regions[$index])){
+			return $this->regions[$index];
+		}elseif($load){
+			return ($this->regions[$index] = new RegionLoader($this, $x, $z, static::REGION_FILE_EXTENSION));
+		}else{
+			return null;
 		}
 	}
 
-	public function close(){
-		$this->unloadChunks();
+	protected function close(){
 		foreach($this->regions as $index => $region){
 			$region->close();
 			unset($this->regions[$index]);
 		}
-		$this->level = null;
 	}
 }

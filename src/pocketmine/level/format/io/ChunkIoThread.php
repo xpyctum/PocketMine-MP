@@ -158,7 +158,11 @@ abstract class ChunkIoThread extends Thread{
 	protected function processChunkSaveRequests(){
 		while(($data = $this->chunkSaveBuffer->shift()) !== null){
 			try{
-				$this->writeChunk(Chunk::fastDeserialize($data));
+				$chunk = Chunk::fastDeserialize($data);
+				if(!$chunk->isGenerated()){
+					throw new ChunkException("Cannot save un-generated chunk!");
+				}
+				$this->writeChunk($chunk);
 			}catch(\Throwable $e){
 				$this->logger->critical("An exception occurred while attempting to save a chunk");
 				$this->logger->logException($e);
