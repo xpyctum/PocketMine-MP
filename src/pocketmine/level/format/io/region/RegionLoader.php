@@ -25,6 +25,7 @@ namespace pocketmine\level\format\io\region;
 
 use pocketmine\level\format\Chunk;
 use pocketmine\level\format\io\ChunkException;
+use pocketmine\level\LevelException;
 use pocketmine\utils\Binary;
 use pocketmine\utils\MainLogger;
 
@@ -32,7 +33,11 @@ class RegionLoader{
 	const VERSION = 1;
 	const COMPRESSION_GZIP = 1;
 	const COMPRESSION_ZLIB = 2;
+
 	const MAX_SECTOR_LENGTH = 256 << 12; //256 sectors, (1 MiB)
+	const REGION_HEADER_LENGTH = 8192; //4096 location table + 4096 timestamps
+	const MAX_REGION_FILE_SIZE = 32 * 32 * self::MAX_SECTOR_LENGTH + self::REGION_HEADER_LENGTH; //32 * 32 1MiB chunks + header size
+
 	public static $COMPRESSION_LEVEL = 7;
 
 	protected $x;
@@ -51,10 +56,21 @@ class RegionLoader{
 		$this->z = $regionZ;
 		$this->levelProvider = $level;
 		$this->filePath = $this->levelProvider->getPath() . "region/r.$regionX.$regionZ.$fileExtension";
+	}
+
+	public function open(){
 		$exists = file_exists($this->filePath);
 		if(!$exists){
 			touch($this->filePath);
+		}else{
+			$fileSize = filesize($this->filePath);
+			if($fileSize > self::MAX_REGION_FILE_SIZE){
+				throw new LevelException("Corrupted oversized region found, expected max " . self::MAX_REGION_FILE_SIZE . " bytes, got " . $fileSize . " bytes");
+			}elseif($fileSize % 4096 !== 0){
+				throw new LevelException("Corrupted region file detected: region file should be padded to a multiple of 4KiB");
+			}
 		}
+
 		$this->filePointer = fopen($this->filePath, "r+b");
 		stream_set_read_buffer($this->filePointer, 1024 * 16); //16KB
 		stream_set_write_buffer($this->filePointer, 1024 * 16); //16KB
@@ -255,14 +271,28 @@ class RegionLoader{
 		fseek($this->filePointer, 0);
 		$this->lastSector = 1;
 
-		$data = unpack("N*", fread($this->filePointer, 4 * 1024 * 2)); //1024 records * 4 bytes * 2 times
+		$headerRaw = fread($this->filePointer, self::REGION_HEADER_LENGTH);
+		if(($len = strlen($headerRaw)) !== self::REGION_HEADER_LENGTH){
+			throw new LevelException("Invalid region file header, expected " . self::REGION_HEADER_LENGTH . " bytes, got " . $len . " bytes");
+		}
+
+		$data = unpack("N*", $headerRaw);
 		for($i = 0; $i < 1024; ++$i){
 			$index = $data[$i + 1];
+			$offset = $index >> 8;
+			if($offset !== 0){
+				fseek($this->filePointer, ($offset << 12) - 1);
+				if(fgetc($this->filePointer) === false){ //Try and read from the location
+					throw new LevelException("Region file location offset points to invalid location, maybe corrupted");
+				}
+			}
 			$this->locationTable[$i] = [$index >> 8, $index & 0xff, $data[1024 + $i + 1]];
 			if(($this->locationTable[$i][0] + $this->locationTable[$i][1] - 1) > $this->lastSector){
 				$this->lastSector = $this->locationTable[$i][0] + $this->locationTable[$i][1] - 1;
 			}
 		}
+
+		fseek($this->filePointer, 0);
 	}
 
 	private function writeLocationTable(){
@@ -285,7 +315,7 @@ class RegionLoader{
 		fwrite($this->filePointer, Binary::writeInt($this->locationTable[$index][2]), 4);
 	}
 
-	protected function createBlank(){
+	public function createBlank(){
 		fseek($this->filePointer, 0);
 		ftruncate($this->filePointer, 8192); // this fills the file with the null byte
 		$this->lastSector = 1;
@@ -298,6 +328,24 @@ class RegionLoader{
 
 	public function getZ() : int{
 		return $this->z;
+	}
+
+	public function getFilePath() : string{
+
+	}
+
+	public function createBackup(bool $deleteCurrent = false){
+		$backupPath = $this->filePath . ".bak." . time();
+		if($deleteCurrent){
+			if(is_resource($this->filePointer)){
+				fclose($this->filePointer);
+			}
+			rename($this->filePath, $backupPath);
+		}else{
+			copy($this->filePath, $backupPath);
+		}
+
+		return $backupPath;
 	}
 
 }
