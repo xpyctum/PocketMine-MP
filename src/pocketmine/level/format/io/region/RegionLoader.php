@@ -331,10 +331,10 @@ class RegionLoader{
 	}
 
 	public function getFilePath() : string{
-
+		return $this->filePath;
 	}
 
-	public function createBackup(bool $deleteCurrent = false){
+	public function createBackup(bool $deleteCurrent = false) : string{
 		$backupPath = $this->filePath . ".bak." . time();
 		if($deleteCurrent){
 			if(is_resource($this->filePointer)){
