@@ -277,15 +277,21 @@ class RegionLoader{
 		}
 
 		$data = unpack("N*", $headerRaw);
+		$usedOffsets = [];
 		for($i = 0; $i < 1024; ++$i){
 			$index = $data[$i + 1];
 			$offset = $index >> 8;
 			if($offset !== 0){
-				fseek($this->filePointer, ($offset << 12) - 1);
+				fseek($this->filePointer, ($offset << 12));
 				if(fgetc($this->filePointer) === false){ //Try and read from the location
 					throw new LevelException("Region file location offset points to invalid location, maybe corrupted");
+				}elseif(isset($usedOffsets[$offset])){
+					throw new LevelException("Found two chunk offsets pointing to the same location");
+				}else{
+					$usedOffsets[$offset] = true;
 				}
 			}
+
 			$this->locationTable[$i] = [$index >> 8, $index & 0xff, $data[1024 + $i + 1]];
 			if(($this->locationTable[$i][0] + $this->locationTable[$i][1] - 1) > $this->lastSector){
 				$this->lastSector = $this->locationTable[$i][0] + $this->locationTable[$i][1] - 1;
