@@ -901,26 +901,17 @@ class Item implements ItemIds, \JsonSerializable{
 	 * @return bool
 	 */
 	public final function equals(Item $item, bool $checkDamage = true, bool $checkCompound = true) : bool{
-		return $this->id === $item->getId() and ($checkDamage === false or $this->getDamage() === $item->getDamage()) and ($checkCompound === false or $this->getCompoundTag() === $item->getCompoundTag());
-	}
-
-	/**
-	 * Compares an Item to this Item. This is the same as {@link Item#equals}
-	 * but will perform additional checks on the items' NBT object tree in case the serialized copy is not up-to-date.
-	 *
-	 * TODO: fix this mess to actually do what the description says it should
-	 *
-	 * @param Item $item
-	 * @param bool $checkDamage
-	 * @param bool $checkCompound
-	 *
-	 * @return bool
-	 */
-	public final function deepEquals(Item $item, bool $checkDamage = true, bool $checkCompound = true) : bool{
-		if($this->equals($item, $checkDamage, $checkCompound)){
-			return true;
-		}elseif($item->hasCompoundTag() and $this->hasCompoundTag()){
-			return NBT::matchTree($this->getNamedTag(), $item->getNamedTag());
+		if($this->id === $item->getId() and ($checkDamage === false or $this->getDamage() === $item->getDamage())){
+			if($checkCompound){
+				if($item->getCompoundTag() === $this->getCompoundTag()){
+					return true;
+				}elseif($this->hasCompoundTag() and $item->hasCompoundTag()){
+					//Serialized NBT didn't match, check the cached object tree.
+					return NBT::matchTree($this->getNamedTag(), $item->getNamedTag());
+				}
+			}else{
+				return true;
+			}
 		}
 
 		return false;
